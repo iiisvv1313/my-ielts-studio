@@ -87,7 +87,7 @@ function relatedHtml(w){
  return '<section class="related"><h3>其他出现位置 <small>（'+rows.length+' 条）</small></h3><p class="muted related-note">查询全部已同步词库，包含同组词及双向同义替换。直接匹配优先，关联词单独标明。</p>'+rows.map(card).join('')+'</section>';
 }
 
-const choiceHistory=new Map();
+const choiceHistory=new Map(),choicePositions=new Map();
 function choiceOptions(w,bank,history=choiceHistory){
  const isSyn=syn(w), key=w.id, correct=norm(w.answer), prior=history.get(key);
  const terms=s=>String(s??'').replace(/(?:\b(?:adj|adv|n|v|vt|vi|prep|pron|conj)\.\s*)/gi,'').split(/[；;，,、／/。]/).map(t=>norm(t)).filter(Boolean);
@@ -106,11 +106,18 @@ function choiceOptions(w,bank,history=choiceHistory){
  const fresh=pool.filter(v=>!prior?.wrong.includes(norm(v)));
  const reused=pool.filter(v=>prior?.wrong.includes(norm(v)));
  const wrong=[...fresh,...reused].slice(0,3);
- const options=shuffle([w.answer,...wrong]);
- if(prior&&options.length>1&&options.indexOf(w.answer)===prior.index){
-  const i=prior.index,j=(i+1+Math.floor(Math.random()*(options.length-1)))%options.length;
-  [options[i],options[j]]=[options[j],options[i]];
- }
+ const options=shuffle(wrong);
+ const n=options.length+1, recent=choicePositions.get(n)||[];
+ let allowed=Array.from({length:n},(_,i)=>i);
+ if(n>1&&recent.length>=2&&recent.at(-1)===recent.at(-2))allowed=allowed.filter(i=>i!==recent.at(-1));
+ if(allowed.length>1&&prior)allowed=allowed.filter(i=>i!==prior.index);
+ const counts=Array.from({length:n},(_,i)=>recent.filter(j=>j===i).length);
+ const min=Math.min(...allowed.map(i=>counts[i]));
+ const weights=allowed.map(i=>1/Math.pow(4,counts[i]-min));
+ let r=Math.random()*weights.reduce((a,b)=>a+b,0),pos=allowed.at(-1);
+ for(let i=0;i<allowed.length;i++){r-=weights[i];if(r<0){pos=allowed[i];break}}
+ options.splice(pos,0,w.answer);
+ choicePositions.set(n,[...recent,pos].slice(-20));
  history.set(key,{wrong:wrong.map(norm),index:options.indexOf(w.answer)});
  return options;
 }
