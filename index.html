@@ -64,37 +64,28 @@ function start(list,ordered=false,plan=null,policy=null){if(!list.length)return;
 function pick(){let s=session;s.locked=false;s.revealed=false;s.hint=false;s.current=null;if(!s.pending.size){s.finished=true;if(!s.deferred.size)endPlan(s);render();return}let clock=db.studyClock||0;let eligibleWord=w=>{let p=progress(w,s.readMode);return (!p.nextStep||clock>=p.nextStep||p.nextDay&&p.nextDay<day())&&(!s.last.has(w.id)||s.step-s.last.get(w.id)>=(p.gap||15)+1)};let eligible=[...s.pending].map(id=>db.words.find(w=>w.id===id)).filter(Boolean).filter(eligibleWord);if(eligible.length){let a=s.ordered?eligible:shuffle(eligible).sort((x,y)=>y.errors-x.errors);s.current=a[0];s.filler=false}else{let a=s.policy?.interleave===false?[]:db.words.filter(w=>!s.pending.has(w.id)&&!s.deferred.has(w.id)&&!s.last.has(w.id)&&progress(w,s.readMode).attempts&&eligibleWord(w)&&(!s.policy?.types||s.policy.types.includes(studyType(w,s.readMode)))&&(!s.policy?.types||s.policy.oldScope!=='due'||studyType(w,s.readMode)!=='old'||due(w,s.readMode)));if(!a.length){s.blocked=true;render();return}a=shuffle(a).sort((x,y)=>Number(due(y,s.readMode))-Number(due(x,s.readMode))||y.errors-x.errors);s.current=a[0];s.filler=true}render()}
 function spellingDiff(a,b){let d=Array.from({length:a.length+1},(_,i)=>Array.from({length:b.length+1},(_,j)=>i===0?j:j===0?i:0));for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(a[i-1]!==b[j-1]));let i=a.length,j=b.length,notes=[];while(i||j){if(i&&j&&d[i][j]===d[i-1][j-1]+(a[i-1]!==b[j-1])){if(a[i-1]!==b[j-1])notes.push(`错写 ${a[i-1]} → ${b[j-1]}（第${j}位）`);i--;j--}else if(j&&d[i][j]===d[i][j-1]+1){notes.push(`漏写 ${b[j-1]}（第${j}位）`);j--}else{notes.push(`多写 ${a[i-1]}（输入第${i}位）`);i--}}return `<div class="worddiff">你写的：${esc(a)}<br>正确的：${esc(b)}<br><span class="danger">${esc(notes.reverse().join('；'))}</span></div>`}
 function relatedKey(value){return String(value??'').normalize('NFKC').toLowerCase().replace(/[’‘]/g,"'").replace(/[‐‑–—]/g,'-').replace(/\s+/g,' ').trim()}
-function relatedTerms(w){return [w.word,...(syn(w)?[w.answer]:[])].map(relatedKey).filter(Boolean)}
+function relatedTerms(w){const split=v=>String(v??'').split(/[;；、\/\n]|(?:\s*(?:→|->|==|=)\s*)/).map(relatedKey).filter(Boolean);return [...new Set([relatedKey(w.word),...split(w.word),...(syn(w)?[relatedKey(w.answer),...split(w.answer)]:[])].filter(Boolean))]}
 function relatedRecords(current,bank){
- const keys=new Set(relatedTerms(current)),groups=new Map(),plain=new Map();
+ const direct=new Set(relatedTerms(current)),keys=new Set(direct);
+ if(current.group)for(const x of bank)if(x.group===current.group)for(const t of relatedTerms(x))keys.add(t);
+ // Expand one explicit synonym step, not an unlimited chain.
+ const groups=new Set();for(const x of bank)if(relatedTerms(x).some(t=>direct.has(t))){if(syn(x))for(const t of relatedTerms(x))keys.add(t);if(x.group)groups.add(x.group)}
+ for(const x of bank)if(x.group&&groups.has(x.group))for(const t of relatedTerms(x))keys.add(t);
+ const out=[];
  for(const x of bank){
-  if(x.id===current.id||current.group&&x.group===current.group)continue;
-  const hits=relatedTerms(x).filter(t=>keys.has(t));
-  if(!hits.length)continue;
-  if(x.cat.startsWith('538')&&x.group){
-   if(!groups.has(x.group))groups.set(x.group,{row:x,hits:new Set()});
-   for(const t of hits)groups.get(x.group).hits.add(t);
-  }else{
-   const key=JSON.stringify([x.cat,x.source,relatedKey(x.word),relatedKey(x.answer)]);
-   if(!plain.has(key))plain.set(key,{row:x,hits:new Set()});
-   for(const t of hits)plain.get(key).hits.add(t);
-  }
+  if(x.id===current.id)continue;
+  const hits=relatedTerms(x).filter(t=>keys.has(t));if(!hits.length&&!(x.group&&x.group===current.group))continue;
+  const number=String(x.group||'').match(/^538-(\d+)$/)?.[1];
+  const label=x.cat.startsWith('538')?({'538 · 考点词义':'538 · 原词认中文','538 · 同义替换':'538 · 英文找同义词','538 · 替换词义':'538 · 同义词认中文'}[x.cat]||x.cat):x.cat;
+  out.push({label,source:[x.source,number?'整理序号 '+number:''].filter(Boolean).join(' · ')||'未标注出处',english:syn(x)?x.word+' → '+x.answer:x.word,meaning:syn(x)?x.cn||'暂无中文释义':x.answer,memo:x.memo||'',hits,rank:x.cat==='听力错词'?0:x.cat.startsWith('538')?3:x.cat.startsWith('阅读')?2:1,errors:x.errors||0,wrong:x.cat==='听力错词',direct:hits.some(t=>direct.has(t))});
  }
- const out=[...plain.values()].map(({row:x,hits})=>({label:(x.cat.startsWith('阅读')?'阅读 · ':x.cat.startsWith('听力')?'':'听力 · ')+x.cat,source:x.source||'未标注出处',english:syn(x)?x.word+' → '+x.answer:x.word,meaning:syn(x)?x.cn||'暂无中文释义':x.answer,memo:x.memo||'',hits:[...hits],rank:x.cat==='听力错词'?0:x.cat.startsWith('阅读')?2:1,errors:x.errors||0,wrong:x.cat==='听力错词'}));
- for(const [group,{row:x,hits}] of groups){
-  const members=bank.filter(v=>v.group===group),main=members.find(v=>v.cat==='538 · 考点词义')||x;
-  const alternatives=[...new Set(members.filter(syn).map(v=>v.answer))];
-  const number=group.match(/^538-(\d+)$/)?.[1];
-  out.push({label:main.source||'538 专项',source:number?(Number(number)<=120?'原书第 '+number+' 位':'整理序号 '+number):'',english:main.word+(alternatives.length?' → '+alternatives.join(' / '):''),meaning:main.memo||main.cn||main.answer,memo:'',hits:[...hits],rank:3,errors:0,wrong:false});
- }
- return out.sort((a,b)=>a.rank-b.rank||Number(b.wrong)-Number(a.wrong));
+ return out.sort((a,b)=>Number(b.direct)-Number(a.direct)||a.rank-b.rank);
 }
 function relatedHtml(w){
- const rows=relatedRecords(w,db.words);if(!rows.length)return '<section class="related"><h3>其他出现位置</h3><small>当前词库暂无其他匹配记录。</small></section>';
- const card=x=>'<article class="related-item"><div class="related-meta"><b>'+esc(x.label)+'</b> · '+esc(x.source)+(x.wrong?' · 历史错误 '+x.errors+' 次':'')+'</div><div class="related-english">'+esc(x.english)+'</div><div class="related-meaning">'+esc(x.meaning)+'</div>'+(x.memo&&x.memo!==x.meaning?'<small>'+esc(x.memo)+'</small>':'')+'</article>';
- return '<section class="related"><h3>其他出现位置 <small>（'+rows.length+' 条）</small></h3><p class="muted related-note">按当前词库匹配考点词与替换词；不同出处可能有不同词义。</p>'+rows.slice(0,4).map(card).join('')+(rows.length>4?'<details><summary>展开其余 '+(rows.length-4)+' 条</summary>'+rows.slice(4).map(card).join('')+'</details>':'')+'</section>';
+ const rows=relatedRecords(w,db.words);if(!rows.length)return '<section class="related"><h3>其他出现位置</h3><small>已查当前全部词库，暂无其他匹配记录。</small></section>';
+ const card=x=>'<article class="related-item"><div class="related-meta"><b>'+esc(x.label)+'</b> · '+esc(x.source)+(x.errors?' · 历史错误 '+x.errors+' 次':'')+'</div><div class="related-english">'+esc(x.english)+'</div><div class="related-meaning">'+esc(x.meaning)+'</div><small>'+esc((x.direct?'直接匹配：':'关联词匹配：')+x.hits.join(' / '))+'</small>'+(x.memo&&x.memo!==x.meaning?'<div><small>'+esc(x.memo)+'</small></div>':'')+'</article>';
+ return '<section class="related"><h3>其他出现位置 <small>（'+rows.length+' 条）</small></h3><p class="muted related-note">查询全部已同步词库，包含同组词及双向同义替换。直接匹配优先，关联词单独标明。</p>'+rows.map(card).join('')+'</section>';
 }
-
 
 const choiceHistory=new Map();
 function choiceOptions(w,bank,history=choiceHistory){
